@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Metal Drum Machine</title>
+
+<style>
+body{
+  background:#0a0a0a;
+  color:#eee;
+  font-family:system-ui,sans-serif;
+  display:flex;
+  justify-content:center;
+  padding:40px;
+}
+.hardware{
+  position:relative;
+  width:1100px;
+  padding:82px 32px 32px 32px;
+  border-radius:16px;
+  background:
+    linear-gradient(145deg,#303030,#151515),
+    repeating-linear-gradient(
+      90deg,
+      rgba(255,255,255,0.05),
+      rgba(255,255,255,0.05) 1px,
+      transparent 1px,
+      transparent 6px
+    );
+  box-shadow:
+    inset 0 2px 12px rgba(255,255,255,0.25),
+    inset 0 -6px 16px rgba(0,0,0,0.9),
+    0 30px 70px rgba(0,0,0,0.85);
+}
+.machine-name{
+  position:absolute;
+  top:24px;
+  right:62px;
+  font-size:17px;               
+  font-weight:600;              
+  letter-spacing:0.16em;        
+  color:#d7d7d7;                 
+  text-transform:uppercase;
+  pointer-events:none;
+  opacity:0.9;                  
+  text-shadow:0 2px 6px rgba(0,0,0,0.35);
+}
+/* screws */
+.screw{position:absolute;width:18px;height:18px;border-radius:50%;
+  background:radial-gradient(circle at 30% 30%,#f0f0f0,#555);}
+.screw::after{content:"";position:absolute;top:7px;left:2px;width:14px;height:3px;background:#222}
+.s1{top:10px;left:10px}.s2{top:10px;right:10px}
+.s3{bottom:10px;left:10px}.s4{bottom:10px;right:10px}
+
+.section{background:rgba(0,0,0,0.35);padding:16px;border-radius:10px;margin-bottom:20px}
+.section h3{margin:0 0 10px;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#ccc}
+
+/* sequencer */
+.grid{display:grid;grid-template-columns:100px repeat(16,28px);gap:5px}
+.track{text-align:right;font-size:12px;padding-right:8px}
+.step{width:28px;height:28px;background:#1e1e1e;border-radius:4px;cursor:pointer}
+.step.active{background:#36ff8b}
+.step.playing{outline:2px solid #fff}
+
+/* mixer */
+#mixer{display:grid;grid-template-columns:repeat(10,1fr);gap:12px}
+.strip{background:rgba(0,0,0,0.4);border-radius:8px;padding:10px;text-align:center;
+  box-shadow:inset 0 1px 3px rgba(255,255,255,0.12)}
+.strip-title{font-size:12px;margin-bottom:6px}
+.strip-label{font-size:10px;color:#aaa;margin-top:6px}
+#mixer input[type=range]{width:100%}
+
+/* controls */
+button{background:#222;color:#eee;border:none;padding:8px 16px;border-radius:6px;cursor:pointer}
+button:hover{background:#333}
+input,select{background:#222;color:#eee}
+.fx-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.fx-row label{font-size:11px;color:#bbb}
+
+input[type="number"]{
+  background:#1f1f1f;
+  color:#eee;
+  border:1px solid #333;
+  border-radius:4px;
+  padding:4px 6px;
+  font-size:14px;
+}
+input[type="number"]:focus{
+  outline:none;
+  border-color:#36ff8b;
+}
+
+</style>
+</head>
+
+<body>
+<div class="hardware">
+
+<div class="screw s1"></div><div class="screw s2"></div>
+<div class="screw s3"></div><div class="screw s4"></div>
+<div class="machine-name">CASSIUS</div>
+<div class="section">
+<h3>Sequencer</h3>
+<div class="grid" id="seq"></div>
+<br>
+
+<label>
+  BPM
+  <input
+    id="bpm"
+    type="number"
+    min="40"
+    max="300"
+    step="1"
+    value="120"
+    style="width:70px; margin-left:6px;"
+  >
+</label>
+
+<button id="play">▶ Play</button>
+<button id="clear">Clear Pattern</button>
+</div>
+
+<div class="section">
+<h3>Global Effects</h3>
+
+<div class="fx-row">
+  <label>Delay Note</label>
+  <select id="delNote">
+    <option value="1">1/4</option>
+    <option value="0.5">1/8</option>
+    <option value="0.75">Dotted 1/8</option>
+    <option value="0.25">1/16</option>
+  </select>
+
+  <label>Delay Feedback</label>
+  <input id="delFb" type="range"
+         min="0" max="0.4" step="0.01" value="0.25">
+
+  <label>Reverb Time</label>
+  <input id="revTime" type="range"
+         min="0.1" max="5" step="0.1" value="1.2">
+  <span id="revLabel">1.2s</span>
+</div>
+</div>
+
+<div class="section">
+<h3>Mixer</h3>
+<div id="mixer"></div>
+</div>
+
+</div>
+
+<script>
+/* ================= DATA ================= */
+const tracks=["Kick","Snare","Clap","CH","OH","LowTom","MidTom","HighTom","Rim","Shaker"];
+const steps=16;
+const pattern=tracks.map(()=>Array(steps).fill(false));
+[0,8].forEach(s=>pattern[0][s]=true);
+[4,12].forEach(s=>pattern[1][s]=true);
+for(let i=0;i<steps;i++) pattern[3][i]=true;
+
+/* ================= AUDIO ================= */
+let ctx,isPlaying=false,currentStep=0,nextTime=0;
+const lookahead=25,scheduleAhead=0.12;
+let master,delayNode,fb,reverb;
+let revSeconds=1.2;
+const trackBus={};
+
+function initAudio(){
+  ctx=new AudioContext();
+
+  master=ctx.createGain();
+  master.gain.value=0.9;
+  master.connect(ctx.destination);
+
+  delayNode=ctx.createDelay(1);
+  fb=ctx.createGain(); fb.gain.value=0.25;
+  delayNode.connect(fb); fb.connect(delayNode);
+  delayNode.connect(master);
+
+  reverb=ctx.createConvolver();
+  reverb.buffer=makeImpulse(revSeconds);
+  reverb.connect(master);
+
+  tracks.forEach(t=>{
+    trackBus[t]={gain:ctx.createGain(),delay:ctx.createGain(),reverb:ctx.createGain()};
+    trackBus[t].gain.gain.value=0.8;
+    trackBus[t].delay.gain.value=0;
+    trackBus[t].reverb.gain.value=0;
+    trackBus[t].gain.connect(master);
+    trackBus[t].delay.connect(delayNode);
+    trackBus[t].reverb.connect(reverb);
+  });
+  updateDelay();
+}
+
+function makeImpulse(seconds){
+  const len=Math.floor(ctx.sampleRate*seconds);
+  const b=ctx.createBuffer(2,len,ctx.sampleRate);
+  for(let c=0;c<2;c++){
+    const d=b.getChannelData(c);
+    for(let i=0;i<len;i++){
+      d[i]=(Math.random()*2-1)*(1-i/len);
+    }
+  }
+  return b;
+}
+
+function updateDelay(){
+  delayNode.delayTime.value=(60/bpm.value)*Number(delNote.value);
+}
+
+/* ================= SOUND ENGINE ================= */
+function route(n,node){
+  node.connect(trackBus[n].gain);
+  node.connect(trackBus[n].delay);
+  node.connect(trackBus[n].reverb);
+}
+
+function noiseBuf(len){
+  const b=ctx.createBuffer(1,ctx.sampleRate*len,ctx.sampleRate);
+  const d=b.getChannelData(0);
+  for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+  return b;
+}
+
+function playDrum(n,t){
+  if(n==="Kick"){const o=ctx.createOscillator(),g=ctx.createGain();
+    o.type="sine";o.frequency.setValueAtTime(150,t);
+    o.frequency.exponentialRampToValueAtTime(45,t+.12);
+    g.gain.setValueAtTime(1,t);g.gain.exponentialRampToValueAtTime(.001,t+.3);
+    o.connect(g);route(n,g);o.start(t);o.stop(t+.5);return;}
+
+  if(n==="Snare"){
+    const o=ctx.createOscillator(),g1=ctx.createGain();
+    o.type="triangle";o.frequency.value=180;
+    g1.gain.setValueAtTime(.7,t);g1.gain.exponentialRampToValueAtTime(.001,t+.25);
+    o.connect(g1);route(n,g1);
+    const b=ctx.createBufferSource();b.buffer=noiseBuf(.25);
+    const hp=ctx.createBiquadFilter();hp.type="highpass";hp.frequency.value=1200;
+    const g2=ctx.createGain();g2.gain.setValueAtTime(1,t);
+    g2.gain.exponentialRampToValueAtTime(.001,t+.2);
+    b.connect(hp).connect(g2);route(n,g2);
+    o.start(t);o.stop(t+.3);b.start(t);b.stop(t+.25);return;}
+
+  if(n==="Clap"||n==="Shaker"){
+    const c=n==="Clap"?3:4, f=n==="Clap"?2300:9000;
+    for(let i=0;i<c;i++){
+      const b=ctx.createBufferSource();b.buffer=noiseBuf(.05);
+      const bp=ctx.createBiquadFilter();bp.type="bandpass";bp.frequency.value=f;
+      const g=ctx.createGain();
+      g.gain.setValueAtTime(1,t+i*.03);
+      g.gain.exponentialRampToValueAtTime(.001,t+i*.15);
+      b.connect(bp).connect(g);route(n,g);
+      b.start(t+i*.03);b.stop(t+i*.15);
+    }return;}
+
+  if(n==="CH"||n==="OH"){
+    const b=ctx.createBufferSource();b.buffer=noiseBuf(.5);
+    const hp=ctx.createBiquadFilter();hp.type="highpass";hp.frequency.value=7000;
+    const g=ctx.createGain();const d=n==="CH"?.05:.45;
+    g.gain.setValueAtTime(.8,t);g.gain.exponentialRampToValueAtTime(.001,t+d);
+    b.connect(hp).connect(g);route(n,g);
+    b.start(t);b.stop(t+d);return;}
+
+  if(n.includes("Tom")){
+    const f={LowTom:90,MidTom:140,HighTom:220}[n];
+    const o=ctx.createOscillator(),g=ctx.createGain();
+    o.frequency.value=f;
+    g.gain.setValueAtTime(1,t);g.gain.exponentialRampToValueAtTime(.001,t+.45);
+    o.connect(g);route(n,g);o.start(t);o.stop(t+.6);return;}
+
+  if(n==="Rim"){
+    const o=ctx.createOscillator(),g=ctx.createGain();
+    o.type="square";o.frequency.value=2000;
+    g.gain.setValueAtTime(.6,t);g.gain.exponentialRampToValueAtTime(.001,t+.06);
+    o.connect(g);route(n,g);o.start(t);o.stop(t+.08);}
+}
+
+/* ================= SEQUENCER ================= */
+function nextNote(){
+  nextTime+=(60/bpm.value)/4;
+  currentStep=(currentStep+1)%steps;
+}
+function scheduler(){
+  while(nextTime<ctx.currentTime+scheduleAhead){
+    tracks.forEach((t,i)=>pattern[i][currentStep]&&playDrum(t,nextTime));
+    document.querySelectorAll(".playing").forEach(e=>e.classList.remove("playing"));
+    document.getElementById(`step-${currentStep}`)?.classList.add("playing");
+    nextNote();
+  }
+  if(isPlaying)setTimeout(scheduler,lookahead);
+}
+
+/* ================= UI ================= */
+function buildUI(){
+  const s=document.getElementById("seq");s.innerHTML="";
+  tracks.forEach((t,i)=>{
+    s.appendChild(Object.assign(document.createElement("div"),{className:"track",textContent:t}));
+    for(let j=0;j<steps;j++){
+      const d=document.createElement("div");d.className="step";
+      if(pattern[i][j])d.classList.add("active");
+      if(i===0)d.id=`step-${j}`;
+      d.onclick=()=>{pattern[i][j]^=1;d.classList.toggle("active")};
+      s.appendChild(d);
+    }
+  });
+  buildMixerUI();
+}
+
+function buildMixerUI(){
+  const m=document.getElementById("mixer");m.innerHTML="";
+  tracks.forEach(t=>{
+    const st=document.createElement("div");st.className="strip";
+    st.innerHTML=`<div class="strip-title">${t}</div>
+      <div class="strip-label">VOL</div><input type=range min=0 max=1 step=.01 value=.8>
+      <div class="strip-label">REVERB</div><input type=range min=0 max=1 step=.01 value=0>
+      <div class="strip-label">DELAY</div><input type=range min=0 max=1 step=.01 value=0>`;
+    const s=st.querySelectorAll("input");
+    s[0].oninput=e=>trackBus[t].gain.gain.value=e.target.value;
+    s[1].oninput=e=>trackBus[t].reverb.gain.value=e.target.value;
+    s[2].oninput=e=>trackBus[t].delay.gain.value=e.target.value;
+    m.appendChild(st);
+  });
+}
+
+buildUI();
+
+clear.onclick=()=>{pattern.forEach(r=>r.fill(false));buildUI()};
+play.onclick=async()=>{
+  if(!ctx){initAudio();await ctx.resume()}
+  isPlaying=!isPlaying;
+  if(isPlaying){currentStep=0;nextTime=ctx.currentTime+.05;scheduler()}
+};
+
+bpm.oninput=updateDelay;
+delNote.onchange=updateDelay;
+delFb.oninput=e=>fb.gain.value=e.target.value;
+revTime.oninput=e=>{
+  revSeconds=Number(e.target.value);
+  revLabel.textContent=revSeconds.toFixed(1)+"s";
+  reverb.buffer=makeImpulse(revSeconds);
+};
+</script>
+</body>
+</html>
